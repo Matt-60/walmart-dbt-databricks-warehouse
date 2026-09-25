@@ -1,0 +1,1 @@
+select Count(DISTINCT city), count(DISTINCT lower(trim(city))) FROM {{ source('walmart_databricks', 'customers') }}

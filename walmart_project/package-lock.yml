@@ -1,0 +1,8 @@
+packages:
+  - name: dbt_utils
+    package: dbt-labs/dbt_utils
+    version: 1.4.0
+  - name: dbt_profiler
+    package: data-mie/dbt_profiler
+    version: 1.0.0
+sha1_hash: 27125b953b91b8d3eaade261cb27e534a9ad80c9

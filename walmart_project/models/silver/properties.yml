@@ -1,0 +1,153 @@
+models:
+  - name: silver_products
+    columns:
+      - name: product_id
+        data_tests:
+          - not_null
+          - unique
+      - name: product_price
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+      - name: product_category
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - Home
+                  - Sports
+                  - Electronics
+                  - Toys
+                  - Clothing
+                  - Grocery
+      - name: product_brand
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - Samsung
+                  - Adidas
+                  - Nestle
+                  - Nike
+                  - LG
+                  - Apple
+                  - Sony
+
+  - name: silver_order_items
+    columns:
+      - name: order_item_id
+        data_tests:
+          - not_null
+          - unique
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('silver_orders')
+                field: order_id
+      - name: product_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('silver_products')
+                field: product_id
+      - name: order_item_quantity
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+      - name: order_item_unit_price
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+      - name: order_item_created_at
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: order_item_updated_at
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+
+  - name: silver_orders
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: customer_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('silver_customers')
+                field: customer_id
+      - name: store_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('silver_stores')
+                field: store_id
+      - name: order_payment_method
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - Cash
+                  - Debit Card
+                  - Credit Card
+                  - Gift Card
+                  - Online
+      - name: order_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - Pending
+                  - Cancelled
+                  - Returned
+                  - Completed
+      - name: order_total_amount
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+      - name: order_created_at
+        data_tests:
+          - not_null:
+              config: {severity: warn}
+      - name: order_updated_at
+        data_tests:
+          - not_null:
+              config: {severity: warn}
+
+  - name: silver_customers
+    columns:
+      - name: customer_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: silver_employees
+    columns:
+      - name: employee_id
+        data_tests: [not_null, unique]
+      - name: store_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('silver_stores')
+                field: store_id
+      - name: employee_salary
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+
+  - name: silver_stores
+    columns:
+      - name: store_id
+        data_tests: [not_null, unique]
