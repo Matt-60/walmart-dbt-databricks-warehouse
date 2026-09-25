@@ -8,4 +8,4 @@ SELECT
     created_timestamp AS product_created_at,
     updated_timestamp AS product_updated_at,
     current_timestamp() AS silver_processed_at
-FROM {{ source('walmart_databricks', 'products') }}
+FROM {{ source('walmart_databricks', 'bronze_products') }}

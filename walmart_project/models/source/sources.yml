@@ -5,9 +5,9 @@ sources:
     database: walmart
     schema: bronze
     tables:
-      - name: customers
-      - name: employees
-      - name: orders
-      - name: products
-      - name: order_items
-      - name: stores
+      - name: bronze_customers
+      - name: bronze_employees
+      - name: bronze_orders
+      - name: bronze_products
+      - name: bronze_order_items
+      - name: bronze_stores

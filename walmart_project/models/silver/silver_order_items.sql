@@ -15,7 +15,7 @@ SELECT
     created_timestamp AS order_item_created_at,
     updated_timestamp AS order_item_updated_at,
     current_timestamp() AS silver_processed_at
-FROM {{ source('walmart_databricks', 'order_items') }}
+FROM {{ source('walmart_databricks', 'bronze_order_items') }}
 
 {% if is_incremental() %}
     WHERE updated_timestamp > (SELECT COALESCE(MAX(order_item_updated_at), '1900-01-01') FROM {{ this }})

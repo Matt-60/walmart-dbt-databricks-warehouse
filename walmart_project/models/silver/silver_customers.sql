@@ -11,4 +11,4 @@ SELECT
     updated_timestamp AS customer_updated_at,
     is_active AS customer_is_active,
     current_timestamp() AS silver_processed_at
-FROM {{ source('walmart_databricks', 'customers') }}
+FROM {{ source('walmart_databricks', 'bronze_customers') }}

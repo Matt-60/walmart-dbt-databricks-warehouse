@@ -10,4 +10,4 @@ SELECT
     updated_timestamp AS employee_updated_at,
     is_active AS employee_is_active,
     current_timestamp() AS silver_processed_at
-FROM {{ source('walmart_databricks', 'employees') }}
+FROM {{ source('walmart_databricks', 'bronze_employees') }}
