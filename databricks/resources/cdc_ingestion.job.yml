@@ -1,0 +1,37 @@
+resources:
+  jobs:
+    walmart_cdc_ingestion:
+      name: Walmart CDC ingestion (source → bronze)
+      max_concurrent_runs: 1   # two runs at once would read the same CDF range
+
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+
+      tasks:
+        - task_key: setup_source          # idempotent — no-op once the source exists
+          environment_key: default
+          notebook_task:
+            notebook_path: ../notebooks/00_setup_source.py
+
+        - task_key: generate_changes
+          depends_on:
+            - task_key: setup_source
+          environment_key: default
+          notebook_task:
+            notebook_path: ../notebooks/01_generate_changes.py
+            base_parameters:
+              new_orders: "50"
+              new_customers: "3"
+
+        - task_key: ingest_cdc
+          depends_on:
+            - task_key: generate_changes
+          environment_key: default
+          notebook_task:
+            notebook_path: ../notebooks/02_ingest_cdc.py
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "5"

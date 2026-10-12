@@ -1,0 +1,23 @@
+# Bundle for the Bronze ingestion job (source simulation + CDC into walmart.bronze)
+bundle:
+  name: walmart_cdc
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog with the source / bronze schemas
+    default: walmart
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://dbc-0f70cc84-aac2.cloud.databricks.com
+
+  prod:
+    mode: production
+    workspace:
+      host: https://dbc-0f70cc84-aac2.cloud.databricks.com
