@@ -1,1 +1,1 @@
-select Count(DISTINCT product_name), count(DISTINCT lower(trim(product_name))) FROM {{ source('walmart_databricks', 'products') }}
+select Count(DISTINCT product_name), count(DISTINCT lower(trim(product_name))) FROM {{ source('walmart_databricks', 'bronze_products') }}
