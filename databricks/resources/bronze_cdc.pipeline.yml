@@ -1,0 +1,13 @@
+resources:
+  pipelines:
+    walmart_bronze_cdc:
+      name: walmart_bronze_cdc
+      catalog: ${var.catalog}
+      schema: bronze              # tables land in walmart.bronze.bronze_<table>
+      serverless: true
+      channel: CURRENT
+      configuration:
+        catalog: ${var.catalog}
+      libraries:
+        - notebook:
+            path: ../pipelines/bronze_cdc.py

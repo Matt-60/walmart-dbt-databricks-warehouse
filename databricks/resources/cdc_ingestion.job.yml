@@ -2,7 +2,7 @@ resources:
   jobs:
     walmart_cdc_ingestion:
       name: Walmart CDC ingestion (source → bronze)
-      max_concurrent_runs: 1   # two runs at once would read the same CDF range
+      max_concurrent_runs: 1
 
       parameters:
         - name: catalog
@@ -24,12 +24,11 @@ resources:
               new_orders: "50"
               new_customers: "3"
 
-        - task_key: ingest_cdc
+        - task_key: bronze_cdc            # Lakeflow pipeline: CDF → AUTO CDC → bronze streaming tables
           depends_on:
             - task_key: generate_changes
-          environment_key: default
-          notebook_task:
-            notebook_path: ../notebooks/02_ingest_cdc.py
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.walmart_bronze_cdc.id}
 
       environments:
         - environment_key: default

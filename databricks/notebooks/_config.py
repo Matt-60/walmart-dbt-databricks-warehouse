@@ -1,7 +1,7 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Shared config
-# MAGIC Table definitions and helpers used by `00_setup_source`, `01_generate_changes` and `02_ingest_cdc` (loaded with `%run ./_config`).
+# MAGIC Table definitions and helpers used by `00_setup_source` and `01_generate_changes` (loaded with `%run ./_config`).
 
 # COMMAND ----------
 
@@ -10,7 +10,6 @@ CATALOG = dbutils.widgets.get("catalog")
 
 SOURCE = f"{CATALOG}.source"     # simulated OLTP system (Delta + Change Data Feed)
 BRONZE = f"{CATALOG}.bronze"     # raw layer read by dbt
-CDC_LOG = f"{BRONZE}._cdc_log"   # last ingested source version per table
 
 # table -> (primary key, business columns)
 TABLES = {
@@ -41,7 +40,3 @@ def src(t):
 
 def brz(t):
     return f"{BRONZE}.bronze_{t}"
-
-
-def latest_version(table):
-    return spark.sql(f"DESCRIBE HISTORY {table} LIMIT 1").first()["version"]
