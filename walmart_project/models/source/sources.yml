@@ -2,12 +2,24 @@ version: 2
 
 sources:
   - name: walmart_databricks
+    description: "Bronze layer, loaded by the Databricks CDC job (databricks/notebooks/02_ingest_cdc.py)."
     database: walmart
     schema: bronze
     tables:
       - name: bronze_customers
       - name: bronze_employees
-      - name: bronze_orders
       - name: bronze_products
-      - name: bronze_order_items
       - name: bronze_stores
+      # transactional tables get new rows every day -> freshness check (dbt source freshness)
+      - name: bronze_orders
+        config:
+          loaded_at_field: updated_timestamp
+          freshness:
+            warn_after: {count: 1, period: day}
+            error_after: {count: 2, period: day}
+      - name: bronze_order_items
+        config:
+          loaded_at_field: updated_timestamp
+          freshness:
+            warn_after: {count: 1, period: day}
+            error_after: {count: 2, period: day}

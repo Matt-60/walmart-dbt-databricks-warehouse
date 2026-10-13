@@ -1,0 +1,68 @@
+models:
+  - name: fact_order_items
+    description: "Grain: one row per order line item. Incremental (MERGE on order_item_id), same lookback window as Silver."
+    columns:
+      - name: order_item_id
+        data_tests: [not_null, unique]
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_orders'), field: order_id}
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_customers'), field: customer_id}
+      - name: product_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_products'), field: product_id}
+      - name: store_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_stores'), field: store_id}
+      - name: order_item_line_amount
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "= order_item_quantity * order_item_unit_price"
+
+  - name: dim_customers
+    description: "Current version of each customer (customers_snapshot, dbt_valid_to IS NULL)."
+    columns:
+      - name: customer_id
+        data_tests: [not_null, unique]
+
+  - name: dim_products
+    description: "Current version of each product, with a price tier."
+    columns:
+      - name: product_id
+        data_tests: [not_null, unique]
+      - name: price_tier
+        data_tests:
+          - accepted_values:
+              arguments: {values: [Budget, Mid, Premium]}
+
+  - name: dim_stores
+    columns:
+      - name: store_id
+        data_tests: [not_null, unique]
+
+  - name: dim_orders
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+
+  - name: dim_employees
+    columns:
+      - name: employee_id
+        data_tests: [not_null, unique]
+
+  - name: obt
+    description: "One big table for BI. Same grain as fact_order_items — the joins must not multiply rows."
+    columns:
+      - name: order_item_id
+        data_tests: [not_null, unique]

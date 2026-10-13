@@ -23,3 +23,14 @@ airflow/walmart_project/
 # secrets
 .env
 **/.env
+
+# Airflow config (generated locally; contains secret keys)
+airflow/config/airflow.cfg
+
+# dbt local user id / editor settings
+.user.yml
+.vscode/
+
+# local leftovers
+_to_delete/
+*.zip

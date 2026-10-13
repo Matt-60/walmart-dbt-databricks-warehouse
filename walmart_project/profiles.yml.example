@@ -1,0 +1,12 @@
+# Copy to profiles.yml (git-ignored) or ~/.dbt/profiles.yml and set the env vars.
+walmart_project:
+  target: dev
+  outputs:
+    dev:
+      type: databricks
+      catalog: walmart
+      schema: default
+      host: "{{ env_var('DBT_DATABRICKS_HOST') }}"
+      http_path: "{{ env_var('DBT_DATABRICKS_HTTP_PATH') }}"
+      token: "{{ env_var('DBT_DATABRICKS_TOKEN') }}"
+      threads: 4
