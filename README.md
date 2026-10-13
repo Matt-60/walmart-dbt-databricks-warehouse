@@ -1,216 +1,208 @@
-# Walmart Retail Data Warehouse
+# Airbnb Analytics Data Warehouse
 
-An orchestrated ELT pipeline for multi-store retail sales analytics — CDC-ingested source data transformed on **Databricks with dbt**, historized with **SCD Type 2**, and run end-to-end every day by a self-hosted **Apache Airflow** deployment.
+An end-to-end ELT warehouse for Airbnb booking analytics — an **Azure SQL** source replicated into **Snowflake** by **Fivetran** (Change Tracking), modeled with **dbt** into a star schema with a **point-in-time SCD Type 2** listing dimension, tested at every layer and run daily by a **dbt Cloud** job.
 
-`Apache Airflow` · `Databricks` · `dbt` · `SQL` · `Medallion Architecture` · `Star Schema` · `SCD Type 2` · `CDC` · `Docker`
+`Azure SQL Database` · `Fivetran` · `Snowflake` · `dbt Cloud` · `SCD Type 2` · `Star Schema` · `Medallion Architecture` · `Key-pair auth`
 
 ---
 
 ## 🎯 Business Goal
 
-A multi-store retail chain needs one analytics-ready view of sales — who bought what, from which store, and how customer, product and order attributes evolve over time — refreshed automatically every day, tested before it reaches reporting, and resilient enough that a bad load never silently corrupts downstream dashboards. This warehouse delivers exactly that: CDC ingestion into a Databricks Lakehouse, dbt-modeled Silver/Gold layers with full SCD Type 2 history on every dimension, and a fully containerized Airflow deployment that runs the whole chain unattended.
+An Airbnb-style business needs to understand which listings and hosts drive revenue, how pricing changes over time, and how booking behavior evolves — while trusting that a listing's past price or attributes aren't silently overwritten. Every booking is reported against the listing **as it was on the booking date**, so a price change today doesn't rewrite last month's revenue by price tier.
 
 ## 🏗️ Architecture
 
 ```
-Databricks Job (CDC) → walmart.bronze
-        ↓
-dbt Silver (cleaned; incremental where it earns its keep)
-        ↓ dbt test — quality gate
-dbt snapshot (SCD Type 2 dimension history)
-        ↓
-dbt Gold — Dimensions  ‖  Fact
-        ↓
-dbt Gold — One Big Table → BI / Analytics
+Azure SQL Database  (bookings, listings, hosts — Change Tracking enabled)
+        │  Fivetran — Azure SQL connector, Change Tracking, daily sync
+        ▼
+Snowflake  AIRBNB.AZURE_SQL_DB_DBO      raw layer: current state per key + _FIVETRAN_SYNCED / _FIVETRAN_DELETED
+        │  dbt source freshness
+        ▼
+dbt Silver      typed + cleaned, incremental MERGE, soft deletes kept as IS_DELETED     ── tests gate
+        ▼
+dbt snapshot    listings_snapshot — SCD Type 2 history
+        ▼
+dbt Gold        dim_listings (SCD2) · dim_hosts · dim_date → fact_bookings (point-in-time join)
 ```
 
 | Layer | Where it lives | Purpose |
 |---|---|---|
-| **Bronze** | Databricks (`walmart.bronze`), populated by a Databricks Job triggered from Airflow | Raw CDC-ingested tables: customers, employees, orders, order_items, products, stores. Built and run entirely in the Databricks workspace, outside this dbt project |
-| **Silver** | dbt models, `walmart.silver` | Cleaned, renamed columns. `orders` and `order_items` are incremental (watermarked); `customers`, `employees`, `products`, `stores` are small reference tables rebuilt in full every run |
-| **Snapshots** | `dbt snapshot`, `walmart.snapshots` | SCD Type 2 history for all five dimension sources — timestamp strategy, hard deletes invalidated |
-| **Gold** | dbt models, `walmart.gold` | Star schema — `DimCustomers`, `DimEmployees`, `DimOrders`, `DimProducts`, `DimStores` (current-version projections of the snapshots) + `FactOrderItems` (incremental) + a denormalized OBT for reporting |
+| **Source** | Azure SQL Database (serverless, free offer) | Operational tables `bookings`, `listings`, `hosts` with primary keys and Change Tracking |
+| **Raw** | `AIRBNB.AZURE_SQL_DB_DBO`, written by Fivetran | Current state per primary key; rows deleted at the source are flagged `_FIVETRAN_DELETED`. This schema *is* the Bronze layer — no separate Bronze models needed |
+| **Silver** | dbt, `AIRBNB.SILVER` | Typed and cleaned models, incremental `MERGE` on `_FIVETRAN_SYNCED`; `silver_obt` joins all three (grain = 1 booking) |
+| **Snapshots** | dbt, `AIRBNB.SNAPSHOTS` | `listings_snapshot` — SCD Type 2 history of listing attributes and prices |
+| **Gold** | dbt, `AIRBNB.GOLD` | Star schema: `fact_bookings`, `dim_listings` (SCD2), `dim_hosts` (SCD1), `dim_date` |
 
-## 🔄 Ingestion — CDC into Bronze
+<b>🔍 dbt lineage graph</b>
 
-Bronze ingestion is a Databricks Job that performs CDC loading into `walmart.bronze`. Its implementation lives in the Databricks workspace, not in this repository — this project picks up from the moment Bronze data lands and owns everything from Silver onward. Airflow triggers and waits on the job through the Databricks SDK:
+<img width="1242" height="296" alt="dbt lineage" src="https://github.com/user-attachments/assets/118a752e-c6f5-42eb-9ab5-c7f06b5a0cc1" />
 
-```python
-ws = WorkspaceClient(host=Variable.get("databricks_host"), token=Variable.get("databricks_token"))
+## 🔄 Ingestion — Fivetran with Change Tracking
 
-run = ws.jobs.run_now_and_wait(job_id=194882876441539, timeout=timedelta(minutes=30))
-
-if run.state.result_state != RunResultState.SUCCESS:
-    raise Exception(f"CDC job failed with state: {run.state.result_state}")
-```
-
-A non-`SUCCESS` result raises immediately, so a failed Bronze load stops the DAG before Silver ever touches bad data.
-
-## 🥈 Silver — Cleaned & Selectively Incremental
-
-`orders` and `order_items` are the two tables that actually grow every day, so they're incremental, filtered by an `updated_timestamp` watermark against the table's own last-loaded value:
+The source tables live in **Azure SQL Database** with SQL Server **Change Tracking** enabled, so the database itself records which rows were inserted, updated or deleted:
 
 ```sql
-{{ config(materialized='incremental', unique_key='order_item_id') }}
+ALTER DATABASE CURRENT SET CHANGE_TRACKING = ON (CHANGE_RETENTION = 7 DAYS, AUTO_CLEANUP = ON);
+ALTER TABLE dbo.bookings ENABLE CHANGE_TRACKING;   -- likewise listings, hosts
+```
+
+A **Fivetran** Azure SQL connector reads those changes once a day and merges them into Snowflake by primary key. Only changed rows move — no full-file reloads — and deletes arrive as a soft-delete flag (`_FIVETRAN_DELETED`) instead of disappearing silently.
+
+| Setting | Value | Why |
+|---|---|---|
+| Update method | Change Tracking | Row-level inserts / updates / deletes, no timestamp cursor |
+| Sync frequency | 24 h | Keeps the serverless database inside the Azure free offer (it auto-pauses between syncs) |
+| Destination | Snowflake native tables, schema `AZURE_SQL_DB_DBO` | Read by dbt as the `fivetran` source |
+| Auth (Snowflake) | `FIVETRAN_USER`, key pair, `FIVETRAN_ROLE` | Snowflake is retiring single-factor password auth for service users |
+
+<details>
+<summary><b>📜 v1 ingestion: ADLS Gen2 + COPY INTO (click to expand)</b></summary>
+
+The first version loaded CSV files from Azure Data Lake Gen2 through a Snowflake **storage integration** and external stage, as a full snapshot on every run (`TRUNCATE` + `COPY INTO ... FORCE = TRUE`), automated hourly with a Snowflake `TASK`. The full script is kept in [`sql/azure_snowflake_ingestion.sql`](./sql/azure_snowflake_ingestion.sql).
+
+**Why `FORCE = TRUE`:** Snowflake tracks per-table file load history (name + checksum) for ~64 days. Without `FORCE`, a file already recorded as loaded is silently skipped, even after the table is truncated.
+
+**Why it was replaced:** `COPY INTO` works at file granularity — changing one row in a 200-row file reloads all 200 rows, so dbt needed an append-only Bronze layer with deduplication (`QUALIFY ROW_NUMBER()`) before every `MERGE`, and deletes in the source were never visible. Moving the source into a database with Change Tracking and letting Fivetran apply row-level changes removed the Bronze layer, the deduplication and the truncate/reload cycle.
+
+</details>
+
+## 🥈 Silver — Incremental, Soft Deletes Kept
+
+Fivetran already keeps one row per primary key, so Silver doesn't deduplicate — it types, cleans and merges incrementally on the time Fivetran last changed a row:
+
+```sql
+{{ config(materialized='incremental', unique_key='BOOKING_ID', incremental_strategy='merge') }}
 
 SELECT
-    order_item_id, order_id, product_id,
-    quantity AS order_item_quantity,
-    unit_price AS order_item_unit_price,
-    line_amount AS order_item_line_amount,
-    is_active AS order_item_is_active,
-    created_timestamp AS order_item_created_at,
-    updated_timestamp AS order_item_updated_at,
-    current_timestamp() AS silver_processed_at
-FROM {{ source('walmart_databricks', 'bronze_order_items') }}
-
+    BOOKING_ID,
+    ...
+    _FIVETRAN_DELETED AS IS_DELETED,
+    _FIVETRAN_SYNCED
+FROM {{ source('fivetran', 'bookings') }}
 {% if is_incremental() %}
-    WHERE updated_timestamp > (SELECT COALESCE(MAX(order_item_updated_at), '1900-01-01') FROM {{ this }})
+WHERE {{ incremental_window() }}   -- _FIVETRAN_SYNCED > MAX(...) - 24 hours
 {% endif %}
 ```
 
-`customers`, `employees`, `products` and `stores` are small reference tables — cheap enough to fully rebuild from source every run, so they are, rather than adding incremental-merge complexity where it buys nothing.
+- **Lookback + idempotent MERGE** — the [`incremental_window`](macros/incremental_window.sql) macro re-reads the last 24 hours so late or retried syncs aren't skipped; re-reading is safe because the model merges on its key. A date range can be backfilled with `--vars "{backfill_from: '2026-10-01', backfill_to: '2026-10-05'}"`.
+- **Soft deletes** — an incremental `MERGE` never removes rows, so deletions are carried as `IS_DELETED` and filtered out before Gold (`silver_obt`).
+- **Reusable macros** — `init_cap`, `multiply` (booking totals) and `tag` (Low / Medium / High price band).
 
-## 📸 Snapshots — SCD Type 2
+## ⭐ Gold — Point-in-Time SCD Type 2
 
-Before Gold is built, `dbt snapshot` captures point-in-time history for every dimension source, using the `timestamp` strategy against each table's own `updated_at` column:
+`listings_snapshot` keeps every version of a listing (`strategy='timestamp'`, `hard_deletes='invalidate'` — a listing deleted at the source gets its current version closed). `dim_listings` exposes all versions with a half-open validity range:
+
+| LISTING_ID | VALID_FROM | VALID_TO | PRICE_PER_NIGHT | IS_CURRENT |
+|---|---|---|---|---|
+| 100 | 1900-01-01 | 2025-06-01 | 120 | false |
+| 100 | 2025-06-01 | 9999-12-31 | 150 | true |
+
+*(illustrative example)* — the first version of each listing starts in 1900, so bookings made before the listing was first snapshotted still match a version.
+
+The fact joins each booking to the version valid **on the booking date**:
 
 ```sql
-{% snapshot customers_snapshot %}
-{{ config(
-    target_schema='snapshots',
-    unique_key='customer_id',
-    strategy='timestamp',
-    updated_at='customer_updated_at',
-    invalidate_hard_deletes=True,
-) }}
-SELECT * FROM {{ ref('silver_customers') }}
-{% endsnapshot %}
+LEFT JOIN {{ ref('dim_listings') }} l
+    ON  b.LISTING_ID = l.LISTING_ID
+    AND b.BOOKING_DATE >= l.VALID_FROM
+    AND b.BOOKING_DATE <  l.VALID_TO      -- half-open: exactly one version matches
 ```
 
-Gold's dimensions read from these snapshots rather than from Silver directly, filtered to the current row only (`WHERE dbt_valid_to IS NULL`) — so today's reporting always reflects the latest attribute values, while the full change history stays queryable separately for anyone who needs it. `order_items` is deliberately never snapshotted — it's a transactional fact, not a slowly-changing attribute.
-
-## ⭐ Gold — Star Schema + One Big Table
+Validity ranges never overlap (tested), so the join adds a `LISTING_KEY` without multiplying bookings.
 
 | Table | Type | Notes |
 |---|---|---|
-| `FactOrderItems` | Fact | Grain: 1 row = 1 order line item. Incremental, built directly from Silver (not from snapshots) |
-| `DimCustomers` | Dimension — current SCD2 version | Adds `full_name` and `email_domain` (derived from the customer's email) |
-| `DimProducts` | Dimension — current SCD2 version | Adds a `price_tier` band (Budget / Mid / Premium) |
-| `DimStores` | Dimension — current SCD2 version | |
-| `DimOrders` | Dimension — current SCD2 version | Order-level attributes: payment method, status |
-| `DimEmployees` | Dimension — current SCD2 version | Adds a `salary_band` (Entry / Mid / Senior); modeled for staffing analysis — see note in Known Limitations |
-| `OBT` | Denormalized one-big-table | `FactOrderItems` joined to every dimension except `DimEmployees`, built for direct BI consumption |
+| `fact_bookings` | Fact, 1 row = 1 booking | Measures: booking amount, cleaning / service fees, totals, nights. Keys: `LISTING_KEY` (version at booking date), `HOST_KEY`, `DATE_KEY` |
+| `dim_listings` | SCD Type 2, 1 row per version | Price, price band, property and room type, location |
+| `dim_hosts` | SCD Type 1 | Superhost status, response rate and quality band; deleted hosts kept with `IS_DELETED` so old bookings keep a valid key |
+| `dim_date` | Calendar | Generated from the booking date range |
 
-<details>
-<summary><b>🧩 OBT join pattern (click to expand)</b></summary>
+## ✅ Data Quality
 
-Instead of a hand-written chain of joins, the OBT declares each join as data and loops over it to build the query — adding a new dimension later is a one-entry change:
+Tests run inside `dbt build`, so a failure stops downstream models.
 
-```jinja
-{% set configs = [
-    { "table": ref('fact_order_items'), "columns": "f.order_item_id, f.order_id, ...", "alias": "f" },
-    { "table": ref('dim_orders'), "columns": "o.order_payment_method, o.order_status",
-      "alias": "o", "join_condition": "f.order_id = o.order_id" },
-    { "table": ref('dim_customers'), "columns": "c.full_name, c.email_domain, ...",
-      "alias": "c", "join_condition": "f.customer_id = c.customer_id" },
-    ...
-] %}
+| Area | Tests |
+|---|---|
+| Source | `unique` + `not_null` on primary keys; freshness on `_FIVETRAN_SYNCED` (warn after 26 h, error after 50 h) |
+| Silver | Unique keys; relationships bookings → listings → hosts; positive nights / prices; accepted values for price band and response-rate quality |
+| Grain | `unique` on `BOOKING_ID` in `silver_obt` and `fact_bookings` — any join fan-out fails the build |
+| Gold keys | `not_null` + `relationships` for `LISTING_KEY`, `HOST_KEY`, `DATE_KEY` |
+| SCD2 | `dbt_utils.mutually_exclusive_ranges` on `dim_listings` (no overlapping versions); exactly one current version per listing |
 
-SELECT
-    {% for config in configs %}{{ config['columns'] }}{% if not loop.last %},{% endif %}{% endfor %}
-FROM
-    {% for config in configs %}
-        {% if loop.first %}{{ config['table'] }} AS {{ config['alias'] }}
-        {% else %}LEFT JOIN {{ config['table'] }} AS {{ config['alias'] }} ON {{ config['join_condition'] }}
-        {% endif %}
-    {% endfor %}
-```
-</details>
+## ⚙️ Orchestration & Security
 
-## ✅ Data Quality (dbt tests)
+A **dbt Cloud deploy job** runs daily on `main`, after the Fivetran sync: `dbt source freshness` → `dbt build` (models, snapshot and tests in dependency order).
 
-- **Primary key integrity** — `not_null` + `unique` on every dimension and fact key
-- **Referential integrity** — `relationships` tests: order_items → orders/products, orders → customers/stores, employees → stores
-- **Domain validation** — `accepted_values` on `product_category`, `product_brand`, `order_payment_method`, `order_status`
-- **Business rule checks** — `dbt_utils.expression_is_true` enforcing positive prices, quantities, salaries and order totals
-- **Soft constraints** — `not_null` on audit timestamp columns runs at `severity: warn`, so a missing timestamp flags a warning instead of blocking the whole pipeline
+Each tool connects to Snowflake as its own **service user with key-pair authentication** and a least-privilege role:
 
-`silver_test` runs right after Silver builds and **before** `snapshot`/Gold — a fail-fast gate so bad Silver data never gets baked into SCD2 history.
-
-## ⚙️ Orchestration (Airflow)
-
-
-<img width="1235" height="90" alt="image" src="https://github.com/user-attachments/assets/5cfec987-a2b1-4f61-85e5-c43bcd2a6e70" />
-
-
-Runs daily at **11:00 Europe/Warsaw** (`0 11 * * *`, `catchup=False`). The full stack — API server, scheduler, DAG processor, Celery worker, triggerer, Postgres metadata DB, Redis broker — runs as a self-hosted Docker Compose cluster (Airflow 3.2), with the dbt project mounted straight into the containers so `BashOperator` tasks call the dbt CLI directly against the same files used for local development.
+| User | Role | Can do |
+|---|---|---|
+| `FIVETRAN_USER` | `FIVETRAN_ROLE` | Write the raw schema `AZURE_SQL_DB_DBO` |
+| `DBT_USER` | `TRANSFORMER` | Read the raw schema; own and build `SILVER`, `SNAPSHOTS`, `GOLD` |
 
 ## 🧠 Key Design Decisions
 
-- **Incremental only where it earns its keep** — high-volume `orders`/`order_items` use a watermark; small reference tables are cheap enough to fully rebuild, avoiding incremental-merge complexity that would buy nothing
-- **SCD2 decoupled from the fact grain** — only the five dimension sources are snapshotted; `order_items` never is, since it's a transactional event, not a slowly-changing attribute
-- **Gold dimensions read from snapshots, not Silver** — filtering to `dbt_valid_to IS NULL` guarantees Gold always reflects the latest values while full history stays queryable separately
-- **Custom `generate_schema_name` macro** — forces every model into exactly the schema set in its config (`bronze`/`silver`/`gold`/`snapshots`) instead of dbt's default target-prefixed naming, keeping the Databricks catalog layout predictable across environments
-- **Config-driven Jinja join loop for the OBT** — the join list is data, looped once, instead of a hand-written repetitive query
-- **Tests gate the pipeline, not just document it** — `silver_test` sits before `snapshot`/`gold_*` in the DAG
-- **`databricks-sdk` over a dedicated Airflow provider** — the CDC job is triggered with `run_now_and_wait()` directly, a lighter dependency than a full provider install for one job trigger
+- **Change Tracking + Fivetran instead of file snapshots** — row-level changes and deletes, no reload of unchanged data, no Bronze deduplication.
+- **The Fivetran schema is the raw layer** — a `SELECT *` Bronze model on top would add nothing; history is captured by dbt snapshots.
+- **Soft deletes in Silver** — keeps incremental models correct when rows disappear at the source.
+- **Point-in-time SCD2 with half-open ranges** — historically accurate revenue by listing attributes, guaranteed one match per booking.
+- **Tests gate the pipeline** — grain tests on the OBT and the fact catch join fan-out before it reaches reporting.
+- **Separate service users and roles** — ingestion and transformation can't touch each other's objects.
 
-## ⚠️ Known Limitations / Current Scope
+## 🐛 Debugging Notes (real issues hit while building this)
 
-- `DimEmployees` is modeled (with a derived salary band) but not yet joined into the Fact/OBT — the source `orders` table carries no `employee_id`, so today it's a standalone reference dimension rather than a sales-attribution one
-- Bronze ingestion (the CDC job itself) runs as a Databricks Job outside this repository; this project owns orchestration plus Silver/Gold/OBT, not the Bronze job's code
+- **File reload ≠ row-level diff (v1).** Changing 1 record + adding 1 record in a 200-row source file reloaded the *entire* 201-row file — Snowflake dedupes `COPY INTO` by file checksum, not row content.
+- **`100090: Duplicate row detected during DML action` (v1).** A Silver `MERGE` read an append-only Bronze table holding two versions of the same key. Fixed with `QUALIFY ROW_NUMBER()` — and later made unnecessary by Fivetran's merge-by-key.
+- **Fact row count inflated (5001 expected, 5011 actual).** `fact_bookings` joined the SCD2 dimension on `LISTING_ID` only, matching every version of a changed listing. First worked around with a current-version filter, then fixed properly with the point-in-time date-range join.
+- **`Database 'airbnb' is not currently available`.** The serverless Azure SQL database auto-pauses when idle; the first connection only wakes it. Fivetran retries automatically, and the daily sync keeps compute inside the free monthly allowance.
+- **Snowflake rejected password logins** for Fivetran and dbt ("single-factor password authentication" blocked) → both moved to key-pair service users.
+- **`Schema 'GOLD' already exists, but current role has no privileges on it`.** The dbt Cloud job was accidentally connecting as the Fivetran user, while the schemas were owned by the role used in development. Fixed with a dedicated `DBT_USER` / `TRANSFORMER` role owning all dbt schemas.
+
+## ⚠️ Known Limitations
+
+- **Changes are applied manually** in Azure SQL to demonstrate CDC and SCD2; there is no automated change generator.
+- **Snapshot change detection uses `CREATED_AT`** (the source bumps it on every update). A source that doesn't would need `strategy='check'`.
+- **Development and production share schemas** (`generate_schema_name` writes to `SILVER` / `GOLD` regardless of target) — a deliberate simplification for a single-developer project.
 
 <details>
-<summary><b>🛠️ Tech stack, project structure & future improvements (click to expand)</b></summary>
+<summary><b>🛠️ Tech stack & project structure (click to expand)</b></summary>
 
 **Technology Stack**
 
 | Technology | Purpose |
 |---|---|
-| Databricks | Lakehouse platform; hosts Bronze/Silver/Gold tables and runs the CDC ingestion job |
-| Apache Airflow 3.2 (CeleryExecutor) | Orchestration — daily DAG, Dockerized (Postgres + Redis + API server + scheduler + DAG processor + worker + triggerer) |
-| dbt-core / dbt-databricks | Transformation, testing, snapshotting against Databricks |
-| databricks-sdk | Triggers and polls the Bronze CDC job from Airflow |
-| dbt_utils, dbt_profiler | dbt packages — reusable test macros and data-profiling utilities |
-| Docker / Docker Compose | Self-hosted local Airflow deployment |
-| Python 3.12, uv | Dependency management |
+| Azure SQL Database (serverless, free offer) | Operational source with Change Tracking |
+| Fivetran | Managed replication Azure SQL → Snowflake |
+| Snowflake | Cloud data warehouse |
+| dbt Cloud (Fusion) | Transformations, snapshots, tests, scheduled job |
+| dbt_utils | Surrogate keys and generic tests |
+| SQL / Jinja | Models and macros |
 
 **Project Structure**
 
 ```
-walmart-dbt-databricks-warehouse/
-├── airflow/
-│   ├── dags/
-│   │   └── orchestrate.py          -- daily DAG: CDC trigger → dbt run/test/snapshot chain
-│   ├── docker-compose.yaml         -- Airflow 3.2 CeleryExecutor cluster
-│   ├── Dockerfile
-│   └── requirements.txt
-├── walmart_project/                -- dbt project (mounted into the Airflow containers)
-│   ├── models/
-│   │   ├── source/sources.yml      -- Bronze tables in walmart.bronze
-│   │   ├── silver/                 -- cleaned models + properties.yml (tests)
-│   │   └── gold/
-│   │       ├── dims/
-│   │       ├── fact/fact_order_items.sql
-│   │       └── obt.sql
-│   ├── snapshots/                  -- SCD Type 2 for all 5 dimension sources
-│   ├── analyses/                   -- ad hoc data-profiling queries
-│   ├── macros/generate_schema_name.sql
-│   └── dbt_project.yml
-├── pyproject.toml
-└── uv.lock
+airbnb-dbt-snowflake-warehouse/
+├── models/
+│   ├── sources.yml              -- Fivetran source + freshness + source tests
+│   ├── silver/                  -- silver_bookings, silver_listings, silver_hosts, silver_obt + tests
+│   └── gold/                    -- fact_bookings, dim_listings, dim_hosts, dim_date + tests
+├── snapshots/
+│   └── listings_snapshot.sql    -- SCD Type 2 history of listings
+├── macros/                      -- incremental_window, init_cap, multiply, tag, generate_schema_name
+├── tests/                       -- singular tests
+├── sql/
+│   └── azure_snowflake_ingestion.sql   -- v1 ingestion (ADLS + COPY INTO), kept for reference
+└── dbt_project.yml              -- vars: fivetran_schema
 ```
 
 **Future Improvements**
-- Join `DimEmployees` into the Fact/OBT once an employee-to-order relationship exists in the source data
-- CI (`dbt build` on PR) instead of relying only on the scheduled run to catch regressions
-- Alerting on Airflow task failure
-- Direct BI-tool connection to the OBT
-- Point-in-time dimension joins for historically-accurate reporting (today's joins are always "current version")
+- A stored procedure in Azure SQL that simulates daily bookings and price changes
+- CI on pull requests (`dbt build --select state:modified+`)
+- Power BI report on the Gold layer
 
 </details>
 
 ---
 
-*Demonstrates a complete, orchestrated ELT pipeline: Databricks CDC ingestion → dbt Silver/Gold modeling on Databricks → SCD Type 2 dimension history → data quality testing → daily Airflow orchestration on a self-hosted Celery cluster → analytics-ready delivery.*
+*Demonstrates managed CDC ingestion (Azure SQL Change Tracking → Fivetran → Snowflake), incremental dbt models with soft deletes, point-in-time SCD Type 2, layered data quality tests and a scheduled dbt Cloud job with least-privilege service users.*
