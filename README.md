@@ -140,18 +140,9 @@ FROM
 
 ## ⚙️ Orchestration (Airflow)
 
-```
-data_ingestion (Databricks CDC job)
-       ↓
-clean_target (wipe dbt's target/ — clean compile every run)
-       ↓
-silver  →  silver_test  →  snapshot
-                              ↓
-                      ┌───────┴───────┐
-                   gold_dims       gold_fact
-                      └───────┬───────┘
-                          gold_obt
-```
+
+<img width="1235" height="90" alt="image" src="https://github.com/user-attachments/assets/5cfec987-a2b1-4f61-85e5-c43bcd2a6e70" />
+
 
 Runs daily at **11:00 Europe/Warsaw** (`0 11 * * *`, `catchup=False`). The full stack — API server, scheduler, DAG processor, Celery worker, triggerer, Postgres metadata DB, Redis broker — runs as a self-hosted Docker Compose cluster (Airflow 3.2), with the dbt project mounted straight into the containers so `BashOperator` tasks call the dbt CLI directly against the same files used for local development.
 
