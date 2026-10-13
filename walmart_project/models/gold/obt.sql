@@ -1,3 +1,8 @@
+{#
+    One big table for BI. Dimension attributes are taken "as they were" when the order was placed
+    (joins on the *_sk version keys). customer_city_current shows the "as is" alternative:
+    the customer's city today, from the current version (customer_id + is_current).
+#}
 {% set configs = [
     {
         "table" : ref('fact_order_items'),
@@ -41,7 +46,7 @@
                     c.customer_is_active
                    """,
         "alias": "c",
-        "join_condition": "f.customer_id = c.customer_id",
+        "join_condition": "f.customer_sk = c.customer_sk",
     },
     {
         "table" : ref('dim_products'),
@@ -54,7 +59,7 @@
                     p.product_is_active
                    """,
         "alias": "p",
-        "join_condition": "f.product_id = p.product_id",
+        "join_condition": "f.product_sk = p.product_sk",
     },
     {
         "table" : ref('dim_stores'),
@@ -66,7 +71,15 @@
                     s.store_is_active
                    """,
         "alias": "s",
-        "join_condition": "f.store_id = s.store_id",
+        "join_condition": "f.store_sk = s.store_sk",
+    },
+    {
+        "table" : ref('dim_customers'),
+        "columns": """
+                    cc.customer_city AS customer_city_current
+                   """,
+        "alias": "cc",
+        "join_condition": "f.customer_id = cc.customer_id AND cc.is_current",
     }
 ]
 %}

@@ -1,6 +1,8 @@
 models:
   - name: fact_order_items
-    description: "Grain: one row per order line item. Incremental (MERGE on order_item_id), same lookback window as Silver."
+    description: >
+      Grain: one row per order line item. *_sk columns point to the dimension version valid when the
+      order was placed (point-in-time join). Incremental (MERGE on order_item_id), same lookback as Silver.
     columns:
       - name: order_item_id
         data_tests: [not_null, unique]
@@ -9,21 +11,22 @@ models:
           - not_null
           - relationships:
               arguments: {to: ref('dim_orders'), field: order_id}
-      - name: customer_id
+      - name: customer_sk
+        description: "Version of the customer at order time. NULL would mean no version covered the order date."
         data_tests:
           - not_null
           - relationships:
-              arguments: {to: ref('dim_customers'), field: customer_id}
-      - name: product_id
+              arguments: {to: ref('dim_customers'), field: customer_sk}
+      - name: product_sk
         data_tests:
           - not_null
           - relationships:
-              arguments: {to: ref('dim_products'), field: product_id}
-      - name: store_id
+              arguments: {to: ref('dim_products'), field: product_sk}
+      - name: store_sk
         data_tests:
           - not_null
           - relationships:
-              arguments: {to: ref('dim_stores'), field: store_id}
+              arguments: {to: ref('dim_stores'), field: store_sk}
       - name: order_item_line_amount
         data_tests:
           - dbt_utils.expression_is_true:
@@ -31,32 +34,73 @@ models:
                 expression: "= order_item_quantity * order_item_unit_price"
 
   - name: dim_customers
-    description: "Current version of each customer (customers_snapshot, dbt_valid_to IS NULL)."
+    description: "SCD Type 2 — one row per customer version, valid in [valid_from, valid_to)."
+    data_tests:
+      # validity ranges of one customer never overlap -> a point-in-time join matches exactly one version
+      - dbt_utils.mutually_exclusive_ranges:
+          arguments:
+            lower_bound_column: valid_from
+            upper_bound_column: valid_to
+            partition_by: customer_id
+            gaps: allowed      # a hard-deleted and re-created customer leaves a gap
     columns:
-      - name: customer_id
+      - name: customer_sk
         data_tests: [not_null, unique]
+      - name: customer_id
+        description: "Business key; exactly one current version per customer."
+        data_tests:
+          - not_null
+          - unique:
+              config: {where: "is_current"}
 
   - name: dim_products
-    description: "Current version of each product, with a price tier."
+    description: "SCD Type 2 — one row per product version, valid in [valid_from, valid_to)."
+    data_tests:
+      - dbt_utils.mutually_exclusive_ranges:
+          arguments:
+            lower_bound_column: valid_from
+            upper_bound_column: valid_to
+            partition_by: product_id
+            gaps: allowed
     columns:
-      - name: product_id
+      - name: product_sk
         data_tests: [not_null, unique]
+      - name: product_id
+        data_tests:
+          - not_null
+          - unique:
+              config: {where: "is_current"}
       - name: price_tier
         data_tests:
           - accepted_values:
               arguments: {values: [Budget, Mid, Premium]}
 
   - name: dim_stores
+    description: "SCD Type 2 — one row per store version, valid in [valid_from, valid_to)."
+    data_tests:
+      - dbt_utils.mutually_exclusive_ranges:
+          arguments:
+            lower_bound_column: valid_from
+            upper_bound_column: valid_to
+            partition_by: store_id
+            gaps: allowed
     columns:
-      - name: store_id
+      - name: store_sk
         data_tests: [not_null, unique]
+      - name: store_id
+        data_tests:
+          - not_null
+          - unique:
+              config: {where: "is_current"}
 
   - name: dim_orders
+    description: "Current state of each order (status changes are an order attribute, not a slowly changing dimension)."
     columns:
       - name: order_id
         data_tests: [not_null, unique]
 
   - name: dim_employees
+    description: "Current version of each employee. Not linked to the fact (orders carry no employee_id)."
     columns:
       - name: employee_id
         data_tests: [not_null, unique]
